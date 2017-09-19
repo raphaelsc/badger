@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"regexp"
 	"sort"
 	"sync"
 	"testing"
@@ -794,18 +795,18 @@ func TestBigKeyValuePairs(t *testing.T) {
 	defer kv.cleanup(t)
 
 	bigK := make([]byte, maxKeySize+1)
-	bigV := make([]byte, maxValueSize+1)
+	bigV := make([]byte, kv.opt.ValueLogFileSize+1)
 	small := make([]byte, 10)
 
-	require.Equal(t, ErrExceedsMaxKeyValueSize, kv.Set(bigK, small, 0))
-	require.Equal(t, ErrExceedsMaxKeyValueSize, kv.Set(small, bigV, 0))
+	require.Regexp(t, regexp.MustCompile("Key.*exceeded"), kv.Set(bigK, small, 0).Error())
+	require.Regexp(t, regexp.MustCompile("Value.*exceeded"), kv.Set(small, bigV, 0).Error())
 
 	e1 := Entry{Key: small, Value: small}
 	e2 := Entry{Key: bigK, Value: bigV}
 	err := kv.BatchSet([]*Entry{&e1, &e2})
 	require.Nil(t, err)
 	require.Nil(t, e1.Error)
-	require.Equal(t, ErrExceedsMaxKeyValueSize, e2.Error)
+	require.Regexp(t, regexp.MustCompile("Key.*exceeded"), e2.Error.Error())
 
 	// make sure e1 was actually set:
 	var item KVItem
