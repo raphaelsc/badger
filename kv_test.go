@@ -23,10 +23,12 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dgraph-io/badger/y"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -895,75 +897,86 @@ func TestSetIfAbsentAsync(t *testing.T) {
 	require.NoError(t, kv.Close())
 }
 
-/*
-func TestIteratorRoad(t *testing.T) {
+func TestIteratorConcurrentWrites(t *testing.T) {
 	dir, err := ioutil.TempDir("", "badger")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
-	kv, _ := NewKV(getTestOptions(dir))
+	kv, err := NewKV(getTestOptions(dir))
+	require.NoError(t, err)
 	defer kv.Close()
 
-	entries := []*Entry{}
-	for i := 0; i < 100000; i++ {
-		entries = append(entries, &Entry{
-			Key: []byte(fmt.Sprintf("k%07d", i)),
-			Value: []byte(fmt.Sprintf("%d", 1)),
-		})
-	}
-	err := kv.BatchSet(entries)
-	require.NoError(err)
+	// The concern is that when picking the tables for an iterator, we first grab the memtables.
+	// Let's say they're A, B, C, and D. Then we grab level zero.  What happens if after we grab
+	// the memtables and before we grab the level zero tables, a new s.mt, E, is created and
+	// flushed (preceded by the existing memtables) to level zero?  Then we'll be iterating with
+	// tables {A, B, C, D} on top of {A, B, C, D, E}.  This means the new changes in E will be
+	// overridden by operations in A-D.
+	//
+	// This means, if we have writes "D[y=3], E[y=4, w=5]", we see y=3 and w=5.
 
-	for i := 0
+	// So here's what we'll do.  We'll do a series of updates in order as follows: x=0, a0=0, x=1,
+	// a1=1, x=2, a2=2, x=3, a3=3, ... If for any N we see aN=N but x < N, then we know that an
+	// iterator got an inconsistent historical view of things.
 
+	closer := y.NewCloser(1)
+	defer func() {
+		closer.SignalAndWait()
+	}()
 
-
-	for i}
-
-	// Not a benchmark. Just a simple test for concurrent writes.
-	n := 20
-	m := 500
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			for j := 0; j < m; j++ {
-				kv.Set([]byte(fmt.Sprintf("k%05d_%08d", i, j)),
-					[]byte(fmt.Sprintf("v%05d_%08d", i, j)), byte(j%127))
+	go func() {
+		defer func() {
+			closer.Done()
+		}()
+		batch := []*Entry{}
+		for i := uint64(0); i < 1000000000; i++ {
+			select {
+			case <-closer.HasBeenClosed():
+				return
+			default:
 			}
-		}(i)
-	}
-	wg.Wait()
-
-	t.Log("Starting iteration")
-
-	opt := IteratorOptions{}
-	opt.Reverse = false
-	opt.PrefetchSize = 10
-	opt.PrefetchValues = true
-
-	it := kv.NewIterator(opt)
-	defer it.Close()
-	var i, j int
-	for it.Rewind(); it.Valid(); it.Next() {
-		item := it.Item()
-		k := item.Key()
-		if k == nil {
-			break // end of iteration.
+			val := fmt.Sprintf("%d", i)
+			batch = append(batch, &Entry{
+				Key:   []byte("x"),
+				Value: []byte(val),
+			}, &Entry{
+				Key:   []byte(fmt.Sprintf("a%09d", i)),
+				Value: []byte(val),
+			})
+			if len(batch) > 1000 {
+				err := kv.BatchSet(batch)
+				require.NoError(t, err)
+				batch = batch[:0]
+			}
 		}
+	}()
 
-		require.EqualValues(t, fmt.Sprintf("k%05d_%08d", i, j), string(k))
-		v := getItemValue(t, item)
-		require.EqualValues(t, fmt.Sprintf("v%05d_%08d", i, j), string(v))
-		require.Equal(t, item.UserMeta(), byte(j%127))
-		j++
-		if j == m {
-			i++
-			j = 0
+	for i := 0; i < 100000; i++ {
+		iter := kv.NewIterator(IteratorOptions{})
+		xvalue := uint64(0)
+		maxAValue := uint64(0)
+		for iter.Rewind(); iter.Valid(); iter.Next() {
+			item := iter.Item()
+			key := item.Key()
+			if 0 == bytes.Compare(key, []byte("x")) {
+				require.Equal(t, uint64(0), xvalue) // not assigned yet
+				err := item.Value(func(val []byte) error {
+					num, e := strconv.ParseUint(string(val), 10, 64)
+					xvalue = num
+					return e
+				})
+				require.NoError(t, err)
+			} else {
+				require.Equal(t, byte('a'), key[0])
+				number, err := strconv.ParseUint(string(key[1:]), 10, 64)
+				require.NoError(t, err)
+				if number > maxAValue {
+					maxAValue = number
+				}
+			}
 		}
+		require.True(t, xvalue >= maxAValue)
+		iter.Close()
 	}
-	require.EqualValues(t, n, i)
-	require.EqualValues(t, 0, j)
+
+	fmt.Printf("finishing...\n")
 }
-
-*/
