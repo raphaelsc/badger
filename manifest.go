@@ -69,6 +69,8 @@ type LevelManifest struct {
 type TableManifest struct {
 	Level         uint8
 	MaxCASCounter uint64
+	Smallest      []byte
+	Biggest       []byte
 }
 
 // manifestFile holds the file pointer (and other info) about the manifest file, which is a log
@@ -99,7 +101,8 @@ const (
 func (m *Manifest) asChanges() []*protos.ManifestChange {
 	changes := make([]*protos.ManifestChange, 0, len(m.Tables))
 	for id, tm := range m.Tables {
-		changes = append(changes, makeTableCreateChange(id, int(tm.Level), tm.MaxCASCounter))
+		changes = append(changes, makeTableCreateChange(id, int(tm.Level), tm.MaxCASCounter,
+			tm.Smallest, tm.Biggest))
 	}
 	return changes
 }
@@ -381,6 +384,8 @@ func applyManifestChange(build *Manifest, tc *protos.ManifestChange) error {
 		build.Tables[tc.Id] = TableManifest{
 			Level:         uint8(tc.Level),
 			MaxCASCounter: tc.MaxCASCounter,
+			Smallest:      tc.Smallest,
+			Biggest:       tc.Biggest,
 		}
 		for len(build.Levels) <= int(tc.Level) {
 			build.Levels = append(build.Levels, LevelManifest{make(map[uint64]struct{})})
@@ -412,12 +417,15 @@ func applyChangeSet(build *Manifest, changeSet *protos.ManifestChangeSet) error 
 	return nil
 }
 
-func makeTableCreateChange(id uint64, level int, maxCASCounter uint64) *protos.ManifestChange {
+func makeTableCreateChange(id uint64, level int, maxCASCounter uint64,
+	smallest, biggest []byte) *protos.ManifestChange {
 	return &protos.ManifestChange{
 		Id:            id,
 		Op:            protos.ManifestChange_CREATE,
 		Level:         uint32(level),
 		MaxCASCounter: maxCASCounter,
+		Smallest:      smallest,
+		Biggest:       biggest,
 	}
 }
 

@@ -1164,26 +1164,29 @@ func arenaSize(opt *Options) int64 {
 }
 
 // WriteLevel0Table flushes memtable. It drops deleteValues.
-func writeLevel0Table(s *skl.Skiplist, f *os.File) (maxCasCounter uint64, err error) {
+func writeLevel0Table(s *skl.Skiplist, f *os.File) (info table.Info, err error) {
 	iter := s.NewIterator()
 	defer iter.Close()
 	b := table.NewTableBuilder()
 	defer b.Close()
 	maxCas := uint64(0)
+	var first []byte
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
 		value := iter.Value()
 		if maxCas < value.CASCounter {
 			maxCas = value.CASCounter
 		}
-		if err := b.Add(iter.Key(), value); err != nil {
-			return 0, err
+		key := iter.Key()
+		if first == nil {
+			first = append([]byte{}, key...)
+		}
+		if err := b.Add(key, value); err != nil {
+			return table.Info{}, err
 		}
 	}
+	last :=b.LastKey()
 	_, err = f.Write(b.Finish())
-	if err != nil {
-		return 0, err
-	}
-	return maxCas, nil
+	return table.MakeInfo(maxCas, first, last), nil
 }
 
 type flushTask struct {
@@ -1223,7 +1226,7 @@ func (s *KV) flushMemtable(lc *y.Closer) error {
 		dirSyncCh := make(chan error)
 		go func() { dirSyncCh <- syncDir(s.opt.Dir) }()
 
-		maxCasCounter, err := writeLevel0Table(ft.mt, fd)
+		info, err := writeLevel0Table(ft.mt, fd)
 		dirSyncErr := <-dirSyncCh
 
 		if err != nil {
@@ -1235,7 +1238,7 @@ func (s *KV) flushMemtable(lc *y.Closer) error {
 			return err
 		}
 
-		tbl, err := table.OpenTable(fd, maxCasCounter, s.opt.TableLoadingMode)
+		tbl, err := table.OpenTable(fd, info, s.opt.TableLoadingMode)
 		if err != nil {
 			s.elog.Printf("ERROR while opening table: %v", err)
 			return err

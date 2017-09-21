@@ -116,7 +116,9 @@ func newLevelsController(kv *KV, mf *Manifest) (*levelsController, error) {
 			return nil, errors.Wrapf(err, "Opening file: %q", fname)
 		}
 
-		t, err := table.OpenTable(fd, tableManifest.MaxCASCounter, kv.opt.TableLoadingMode)
+		t, err := table.OpenTable(fd,
+			table.MakeInfo(tableManifest.MaxCASCounter, tableManifest.Smallest, tableManifest.Biggest),
+			kv.opt.TableLoadingMode)
 		if err != nil {
 			closeAllTables(tables)
 			return nil, errors.Wrapf(err, "Opening table: %q", fname)
@@ -294,16 +296,23 @@ func (s *levelsController) compactBuildTables(
 		timeStart := time.Now()
 		builder := table.NewTableBuilder()
 		maxCas := uint64(0)
+		var firstKey []byte
 		for ; it.Valid(); it.Next() {
-			if builder.ReachedCapacity(s.kv.opt.MaxTableSize) {
-				break
-			}
 			value := it.Value()
 			if maxCas < value.CASCounter {
 				maxCas = value.CASCounter
 			}
+			key := it.Key()
+			if firstKey == nil {
+				firstKey = append([]byte{}, key...)
+			}
 			y.Check(builder.Add(it.Key(), value))
+			if builder.ReachedCapacity(s.kv.opt.MaxTableSize) {
+				it.Next()
+				break
+			}
 		}
+
 		// It was true that it.Valid() at least once in the loop above, which means we
 		// called Add() at least once, and builder is not Empty().
 		y.AssertTrue(!builder.Empty())
@@ -320,12 +329,13 @@ func (s *levelsController) compactBuildTables(
 				return
 			}
 
+			lastKey := builder.LastKey()
 			if _, err := fd.Write(builder.Finish()); err != nil {
 				resultCh <- newTableResult{nil, errors.Wrapf(err, "Unable to write to file: %d", fileID)}
 				return
 			}
 
-			tbl, err := table.OpenTable(fd, maxCas, s.kv.opt.TableLoadingMode)
+			tbl, err := table.OpenTable(fd, table.MakeInfo(maxCas, firstKey, lastKey), s.kv.opt.TableLoadingMode)
 			// decrRef is added below.
 			resultCh <- newTableResult{tbl, errors.Wrapf(err, "Unable to open table: %q", fd.Name())}
 		}(builder)
@@ -373,7 +383,8 @@ func buildChangeSet(cd *compactDef, newTables []*table.Table) protos.ManifestCha
 	changes := []*protos.ManifestChange{}
 	for _, table := range newTables {
 		changes = append(changes,
-			makeTableCreateChange(table.ID(), cd.nextLevel.level, table.MaxCasCounter()))
+			makeTableCreateChange(table.ID(), cd.nextLevel.level, table.MaxCasCounter(),
+				table.Smallest(), table.Biggest()))
 	}
 	for _, table := range cd.top {
 		changes = append(changes, makeTableDeleteChange(table.ID()))
@@ -506,7 +517,8 @@ func (s *levelsController) runCompactDef(l int, cd compactDef) (err error) {
 			// The order matters here -- you can't temporarily have two copies of the same
 			// table id when reloading the manifest.
 			makeTableDeleteChange(tbl.ID()),
-			makeTableCreateChange(tbl.ID(), nextLevel.level, tbl.MaxCasCounter()),
+			makeTableCreateChange(tbl.ID(), nextLevel.level, tbl.MaxCasCounter(),
+				tbl.Smallest(), tbl.Biggest()),
 		}
 		if err := s.kv.manifest.addChanges(changes); err != nil {
 			return err
@@ -617,7 +629,7 @@ func (s *levelsController) addLevel0Table(t *table.Table) error {
 	// the proper order. (That means this update happens before that of some compaction which
 	// deletes the table.)
 	err := s.kv.manifest.addChanges([]*protos.ManifestChange{
-		makeTableCreateChange(t.ID(), 0, t.MaxCasCounter()),
+		makeTableCreateChange(t.ID(), 0, t.MaxCasCounter(), t.Smallest(), t.Biggest()),
 	})
 	if err != nil {
 		return err

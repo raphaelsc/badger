@@ -80,6 +80,8 @@ type Builder struct {
 
 	keyBuf   *bytes.Buffer
 	keyCount int
+
+	lastKey []byte
 }
 
 // NewTableBuilder makes a new TableBuilder.
@@ -96,6 +98,11 @@ func (b *Builder) Close() {}
 
 // Empty returns whether it's empty.
 func (b *Builder) Empty() bool { return b.buf.Len() == 0 }
+
+// LastKey returns the last key added to the builder.
+func (b *Builder) LastKey() []byte {
+	return append([]byte{}, b.lastKey...)
+}
 
 // keyDiff returns a suffix of newKey that is different from b.baseKey.
 func (b Builder) keyDiff(newKey []byte) []byte {
@@ -168,6 +175,8 @@ func (b *Builder) Add(key []byte, value y.ValueStruct) error {
 		b.prevOffset = math.MaxUint32 // First key-value pair of block has header.prev=MaxInt.
 	}
 	b.addHelper(key, value)
+	lastKey := b.lastKey[:0]
+	b.lastKey = append(lastKey, key...)
 	return nil // Currently, there is no meaningful error.
 }
 

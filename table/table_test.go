@@ -17,6 +17,7 @@
 package table
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
@@ -32,7 +33,7 @@ func key(prefix string, i int) string {
 	return prefix + fmt.Sprintf("%04d", i)
 }
 
-func buildTestTable(t *testing.T, prefix string, n int) (f *os.File, maxCasCounter uint64) {
+func buildTestTable(t *testing.T, prefix string, n int) (*os.File, Info) {
 	y.AssertTrue(n <= 10000)
 	keyValues := make([][]string, n)
 	for i := 0; i < n; i++ {
@@ -44,7 +45,7 @@ func buildTestTable(t *testing.T, prefix string, n int) (f *os.File, maxCasCount
 }
 
 // keyValues is n by 2 where n is number of pairs.
-func buildTable(t *testing.T, keyValues [][]string) (f *os.File, maxCasCounter uint64) {
+func buildTable(t *testing.T, keyValues [][]string) (f *os.File, info Info) {
 	b := NewTableBuilder()
 	defer b.Close()
 	// TODO: Add test for file garbage collection here. No files should be left after the tests here.
@@ -60,28 +61,43 @@ func buildTable(t *testing.T, keyValues [][]string) (f *os.File, maxCasCounter u
 	sort.Slice(keyValues, func(i, j int) bool {
 		return keyValues[i][0] < keyValues[j][0]
 	})
-	maxCasCounter = uint64(len(keyValues))
+	maxCasCounter := uint64(len(keyValues))
+	var smallest, biggest []byte
 	for i, kv := range keyValues {
 		y.AssertTrue(len(kv) == 2)
+		key := []byte(kv[0])
+		value := []byte(kv[1])
 		// Cas counter values aren't supposed to be zero, hence the use of i+1.
-		err := b.Add([]byte(kv[0]), y.MakeValueStruct([]byte(kv[1]), 'A', 0, uint64(i+1)))
+		err := b.Add(key, y.MakeValueStruct(value, 'A', 0, uint64(i+1)))
 		if t != nil {
 			require.NoError(t, err)
 		} else {
 			y.Check(err)
 		}
+		if i == 0 {
+			smallest = key
+			biggest = key
+		} else {
+			if bytes.Compare(smallest, key) > 0 {
+				smallest = key
+			}
+			if bytes.Compare(biggest, key) < 0 {
+				biggest = key
+			}
+		}
 	}
 	f.Write(b.Finish())
 	f.Close()
-	f, _ = y.OpenSyncedFile(filename, true)
-	return f, maxCasCounter
+	f, err = y.OpenSyncedFile(filename, true)
+	require.NoError(t, err)
+	return f, MakeInfo(maxCasCounter, smallest, biggest)
 }
 
 func TestSeekToFirst(t *testing.T) {
 	for _, n := range []int{101, 199, 200, 250, 9999, 10000} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			f, maxCas := buildTestTable(t, "key", n)
-			table, err := OpenTable(f, maxCas, options.MemoryMap)
+			f, info := buildTestTable(t, "key", n)
+			table, err := OpenTable(f, info, options.MemoryMap)
 			require.NoError(t, err)
 			defer table.DecrRef()
 			it := table.NewIterator(false)
@@ -99,8 +115,8 @@ func TestSeekToFirst(t *testing.T) {
 func TestSeekToLast(t *testing.T) {
 	for _, n := range []int{101, 199, 200, 250, 9999, 10000} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			f, maxCas := buildTestTable(t, "key", n)
-			table, err := OpenTable(f, maxCas, options.MemoryMap)
+			f, info := buildTestTable(t, "key", n)
+			table, err := OpenTable(f, info, options.MemoryMap)
 			require.NoError(t, err)
 			defer table.DecrRef()
 			it := table.NewIterator(false)
@@ -122,8 +138,8 @@ func TestSeekToLast(t *testing.T) {
 }
 
 func TestSeek(t *testing.T) {
-	f, maxCas := buildTestTable(t, "k", 10000)
-	table, err := OpenTable(f, maxCas, options.MemoryMap)
+	f, info := buildTestTable(t, "k", 10000)
+	table, err := OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer table.DecrRef()
 
@@ -157,8 +173,8 @@ func TestSeek(t *testing.T) {
 }
 
 func TestSeekForPrev(t *testing.T) {
-	f, maxCas := buildTestTable(t, "k", 10000)
-	table, err := OpenTable(f, maxCas, options.MemoryMap)
+	f, info := buildTestTable(t, "k", 10000)
+	table, err := OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer table.DecrRef()
 
@@ -195,8 +211,8 @@ func TestIterateFromStart(t *testing.T) {
 	// Vary the number of elements added.
 	for _, n := range []int{101, 199, 200, 250, 9999, 10000} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			f, maxCas := buildTestTable(t, "key", n)
-			table, err := OpenTable(f, maxCas, options.MemoryMap)
+			f, info := buildTestTable(t, "key", n)
+			table, err := OpenTable(f, info, options.MemoryMap)
 			require.NoError(t, err)
 			defer table.DecrRef()
 			ti := table.NewIterator(false)
@@ -223,8 +239,8 @@ func TestIterateFromEnd(t *testing.T) {
 	// Vary the number of elements added.
 	for _, n := range []int{101, 199, 200, 250, 9999, 10000} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			f, maxCas := buildTestTable(t, "key", n)
-			table, err := OpenTable(f, maxCas, options.FileIO)
+			f, info := buildTestTable(t, "key", n)
+			table, err := OpenTable(f, info, options.FileIO)
 			require.NoError(t, err)
 			defer table.DecrRef()
 			ti := table.NewIterator(false)
@@ -247,8 +263,8 @@ func TestIterateFromEnd(t *testing.T) {
 }
 
 func TestTable(t *testing.T) {
-	f, maxCas := buildTestTable(t, "key", 10000)
-	table, err := OpenTable(f, maxCas, options.FileIO)
+	f, info := buildTestTable(t, "key", 10000)
+	table, err := OpenTable(f, info, options.FileIO)
 	require.NoError(t, err)
 	defer table.DecrRef()
 	ti := table.NewIterator(false)
@@ -274,8 +290,8 @@ func TestTable(t *testing.T) {
 }
 
 func TestIterateBackAndForth(t *testing.T) {
-	f, maxCas := buildTestTable(t, "key", 10000)
-	table, err := OpenTable(f, maxCas, options.MemoryMap)
+	f, info := buildTestTable(t, "key", 10000)
+	table, err := OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer table.DecrRef()
 
@@ -315,8 +331,8 @@ func TestIterateBackAndForth(t *testing.T) {
 }
 
 func TestUniIterator(t *testing.T) {
-	f, maxCas := buildTestTable(t, "key", 10000)
-	table, err := OpenTable(f, maxCas, options.MemoryMap)
+	f, info := buildTestTable(t, "key", 10000)
+	table, err := OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer table.DecrRef()
 	{
@@ -349,12 +365,12 @@ func TestUniIterator(t *testing.T) {
 
 // Try having only one table.
 func TestConcatIteratorOneTable(t *testing.T) {
-	f, maxCas := buildTable(t, [][]string{
+	f, info := buildTable(t, [][]string{
 		{"k1", "a1"},
 		{"k2", "a2"},
 	})
 
-	tbl, err := OpenTable(f, maxCas, options.MemoryMap)
+	tbl, err := OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer tbl.DecrRef()
 
@@ -371,16 +387,16 @@ func TestConcatIteratorOneTable(t *testing.T) {
 }
 
 func TestConcatIterator(t *testing.T) {
-	f1, maxCas1 := buildTestTable(t, "keya", 10000)
-	f2, maxCas2 := buildTestTable(t, "keyb", 10000)
-	f3, maxCas3 := buildTestTable(t, "keyc", 10000)
-	tbl1, err := OpenTable(f1, maxCas1, options.MemoryMap)
+	f1, info1 := buildTestTable(t, "keya", 10000)
+	f2, info2 := buildTestTable(t, "keyb", 10000)
+	f3, info3 := buildTestTable(t, "keyc", 10000)
+	tbl1, err := OpenTable(f1, info1, options.MemoryMap)
 	require.NoError(t, err)
 	defer tbl1.DecrRef()
-	tbl2, err := OpenTable(f2, maxCas2, options.LoadToRAM)
+	tbl2, err := OpenTable(f2, info2, options.LoadToRAM)
 	require.NoError(t, err)
 	defer tbl2.DecrRef()
-	tbl3, err := OpenTable(f3, maxCas3, options.LoadToRAM)
+	tbl3, err := OpenTable(f3, info3, options.LoadToRAM)
 	require.NoError(t, err)
 	defer tbl3.DecrRef()
 
@@ -451,18 +467,18 @@ func TestConcatIterator(t *testing.T) {
 }
 
 func TestMergingIterator(t *testing.T) {
-	f1, maxCas1 := buildTable(t, [][]string{
+	f1, info1 := buildTable(t, [][]string{
 		{"k1", "a1"},
 		{"k2", "a2"},
 	})
-	f2, maxCas2 := buildTable(t, [][]string{
+	f2, info2 := buildTable(t, [][]string{
 		{"k1", "b1"},
 		{"k2", "b2"},
 	})
-	tbl1, err := OpenTable(f1, maxCas1, options.LoadToRAM)
+	tbl1, err := OpenTable(f1, info1, options.LoadToRAM)
 	require.NoError(t, err)
 	defer tbl1.DecrRef()
-	tbl2, err := OpenTable(f2, maxCas2, options.LoadToRAM)
+	tbl2, err := OpenTable(f2, info2, options.LoadToRAM)
 	require.NoError(t, err)
 	defer tbl2.DecrRef()
 	it1 := tbl1.NewIterator(false)
@@ -617,14 +633,21 @@ func BenchmarkRead(b *testing.B) {
 	f, err := y.OpenSyncedFile(filename, true)
 	y.Check(err)
 	const casValue uint64 = 5555
+	var smallest, biggest []byte
 	for i := 0; i < n; i++ {
-		k := fmt.Sprintf("%016x", i)
-		v := fmt.Sprintf("%d", i)
-		y.Check(builder.Add([]byte(k), y.MakeValueStruct([]byte(v), 123, 0, casValue)))
+		k := []byte(fmt.Sprintf("%016x", i))
+		if i == 0 {
+			smallest = k
+		} else if i == n-1 {
+			// Zero padding means highest number compares highest.
+			biggest = k
+		}
+		v := []byte(fmt.Sprintf("%d", i))
+		y.Check(builder.Add(k, y.MakeValueStruct(v, 123, 0, casValue)))
 	}
 
 	f.Write(builder.Finish())
-	tbl, err := OpenTable(f, casValue, options.MemoryMap)
+	tbl, err := OpenTable(f, MakeInfo(casValue, smallest, biggest), options.MemoryMap)
 	y.Check(err)
 	defer tbl.DecrRef()
 
@@ -648,14 +671,20 @@ func BenchmarkReadAndBuild(b *testing.B) {
 	f, err := y.OpenSyncedFile(filename, true)
 	y.Check(err)
 	const casValue uint64 = 5555
+	var smallest, biggest []byte
 	for i := 0; i < n; i++ {
-		k := fmt.Sprintf("%016x", i)
-		v := fmt.Sprintf("%d", i)
-		y.Check(builder.Add([]byte(k), y.MakeValueStruct([]byte(v), 123, 0, casValue)))
+		k := []byte(fmt.Sprintf("%016x", i))
+		if i == 0 {
+			smallest = k
+		} else if i == n-1 {
+			biggest = k
+		}
+		v := []byte(fmt.Sprintf("%d", i))
+		y.Check(builder.Add(k, y.MakeValueStruct(v, 123, 0, casValue)))
 	}
 
 	f.Write(builder.Finish())
-	tbl, err := OpenTable(f, casValue, options.MemoryMap)
+	tbl, err := OpenTable(f, MakeInfo(casValue, smallest, biggest), options.MemoryMap)
 	y.Check(err)
 	defer tbl.DecrRef()
 
@@ -687,15 +716,21 @@ func BenchmarkReadMerged(b *testing.B) {
 		builder := NewTableBuilder()
 		f, err := y.OpenSyncedFile(filename, true)
 		const casValue uint64 = 5555
+		var smallest, biggest []byte
 		for j := 0; j < tableSize; j++ {
 			id := j*m + i // Arrays are interleaved.
 			// id := i*tableSize+j (not interleaved)
-			k := fmt.Sprintf("%016x", id)
-			v := fmt.Sprintf("%d", id)
-			y.Check(builder.Add([]byte(k), y.MakeValueStruct([]byte(v), 123, 0, casValue)))
+			k := []byte(fmt.Sprintf("%016x", id))
+			if j == 0 {
+				smallest = k
+			} else if j == tableSize-1 {
+				biggest = k
+			}
+			v := []byte(fmt.Sprintf("%d", id))
+			y.Check(builder.Add(k, y.MakeValueStruct(v, 123, 0, casValue)))
 		}
 		f.Write(builder.Finish())
-		tbl, err := OpenTable(f, casValue, options.MemoryMap)
+		tbl, err := OpenTable(f, MakeInfo(casValue, smallest, biggest), options.MemoryMap)
 		y.Check(err)
 		tables = append(tables, tbl)
 		defer tbl.DecrRef()

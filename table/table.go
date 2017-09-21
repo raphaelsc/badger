@@ -110,11 +110,27 @@ func (b byKey) Len() int               { return len(b) }
 func (b byKey) Swap(i int, j int)      { b[i], b[j] = b[j], b[i] }
 func (b byKey) Less(i int, j int) bool { return bytes.Compare(b[i].key, b[j].key) < 0 }
 
+// Info has basic const meta-information about the state of a table.
+type Info struct {
+	MaxCasCounter uint64
+	Smallest      []byte
+	Biggest       []byte
+}
+
+// MakeInfo makes an Info (and breaks compilation when new fields are added).
+func MakeInfo(maxCasCounter uint64, smallest, biggest []byte) Info {
+	return Info{
+		MaxCasCounter: maxCasCounter,
+		Smallest:      smallest,
+		Biggest:       biggest,
+	}
+}
+
 // OpenTable assumes file has only one table and opens it.  Takes ownership of fd upon function
 // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
 // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
 // deleting.
-func OpenTable(fd *os.File, maxCasCounter uint64, loadingMode options.FileLoadingMode) (*Table, error) {
+func OpenTable(fd *os.File, info Info, loadingMode options.FileLoadingMode) (*Table, error) {
 	fileInfo, err := fd.Stat()
 	if err != nil {
 		// It's OK to ignore fd.Close() errs in this function because we have only read
@@ -156,20 +172,9 @@ func OpenTable(fd *os.File, maxCasCounter uint64, loadingMode options.FileLoadin
 		return nil, y.Wrap(err)
 	}
 
-	it := t.NewIterator(false)
-	defer it.Close()
-	it.Rewind()
-	if it.Valid() {
-		t.smallest = it.Key()
-	}
-
-	it2 := t.NewIterator(true)
-	defer it2.Close()
-	it2.Rewind()
-	if it2.Valid() {
-		t.biggest = it2.Key()
-	}
-	t.maxCasCounter = maxCasCounter
+	t.smallest = info.Smallest
+	t.biggest = info.Biggest
+	t.maxCasCounter = info.MaxCasCounter
 	return t, nil
 }
 

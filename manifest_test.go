@@ -17,6 +17,7 @@
 package badger
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -107,7 +108,7 @@ func key(prefix string, i int) string {
 	return prefix + fmt.Sprintf("%04d", i)
 }
 
-func buildTestTable(t *testing.T, prefix string, n int) (f *os.File, maxCasCounter uint64) {
+func buildTestTable(t *testing.T, prefix string, n int) (f *os.File, info table.Info) {
 	y.AssertTrue(n <= 10000)
 	keyValues := make([][]string, n)
 	for i := 0; i < n; i++ {
@@ -120,7 +121,7 @@ func buildTestTable(t *testing.T, prefix string, n int) (f *os.File, maxCasCount
 
 // TODO - Move these to somewhere where table package can also use it.
 // keyValues is n by 2 where n is number of pairs.
-func buildTable(t *testing.T, keyValues [][]string) (f *os.File, maxCasCounter uint64) {
+func buildTable(t *testing.T, keyValues [][]string) (f *os.File, info table.Info) {
 	b := table.NewTableBuilder()
 	defer b.Close()
 	// TODO: Add test for file garbage collection here. No files should be left after the tests here.
@@ -136,10 +137,12 @@ func buildTable(t *testing.T, keyValues [][]string) (f *os.File, maxCasCounter u
 	sort.Slice(keyValues, func(i, j int) bool {
 		return keyValues[i][0] < keyValues[j][0]
 	})
-	maxCasCounter = uint64(len(keyValues))
+	maxCasCounter := uint64(len(keyValues))
+	var smallest, biggest []byte
 	for i, kv := range keyValues {
 		y.AssertTrue(len(kv) == 2)
-		err := b.Add([]byte(kv[0]), y.ValueStruct{
+		key := []byte(kv[0])
+		err := b.Add(key, y.ValueStruct{
 			Value:      []byte(kv[1]),
 			Meta:       'A',
 			UserMeta:   0,
@@ -150,11 +153,23 @@ func buildTable(t *testing.T, keyValues [][]string) (f *os.File, maxCasCounter u
 		} else {
 			y.Check(err)
 		}
+		if i == 0 {
+			smallest = key
+			biggest = key
+		} else {
+			if bytes.Compare(smallest, key) > 0 {
+				smallest = key
+			}
+			if bytes.Compare(biggest, key) < 0 {
+				biggest = key
+			}
+		}
 	}
 	f.Write(b.Finish())
 	f.Close()
-	f, _ = y.OpenSyncedFile(filename, true)
-	return f, maxCasCounter
+	f, err = y.OpenSyncedFile(filename, true)
+	require.NoError(t, err)
+	return f, table.MakeInfo(maxCasCounter, smallest, biggest)
 }
 
 func TestOverlappingKeyRangeError(t *testing.T) {
@@ -169,8 +184,8 @@ func TestOverlappingKeyRangeError(t *testing.T) {
 
 	lh0 := newLevelHandler(kv, 0)
 	lh1 := newLevelHandler(kv, 1)
-	f, maxCas := buildTestTable(t, "k", 2)
-	t1, err := table.OpenTable(f, maxCas, options.MemoryMap)
+	f, info := buildTestTable(t, "k", 2)
+	t1, err := table.OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer t1.DecrRef()
 
@@ -190,8 +205,8 @@ func TestOverlappingKeyRangeError(t *testing.T) {
 	require.Equal(t, true, done)
 	lc.runCompactDef(0, cd)
 
-	f, maxCas = buildTestTable(t, "l", 2)
-	t2, err := table.OpenTable(f, maxCas, options.MemoryMap)
+	f, info = buildTestTable(t, "l", 2)
+	t2, err := table.OpenTable(f, info, options.MemoryMap)
 	require.NoError(t, err)
 	defer t2.DecrRef()
 	done = lh0.tryAddLevel0Table(t2)
@@ -223,13 +238,14 @@ func TestManifestRewrite(t *testing.T) {
 
 	const casCounter = 5
 	err = mf.addChanges([]*protos.ManifestChange{
-		makeTableCreateChange(0, 0, casCounter),
+		makeTableCreateChange(0, 0, casCounter, []byte("Smallest0"), []byte("biggest0")),
 	})
 	require.NoError(t, err)
 
 	for i := uint64(0); i < uint64(deletionsThreshold*3); i++ {
 		ch := []*protos.ManifestChange{
-			makeTableCreateChange(i+1, 0, casCounter),
+			makeTableCreateChange(i+1, 0, casCounter,
+				[]byte(fmt.Sprintf("Smallest%d", i+1)), []byte(fmt.Sprintf("biggest%d", i+1))),
 			makeTableDeleteChange(i),
 		}
 		err := mf.addChanges(ch)
@@ -241,6 +257,8 @@ func TestManifestRewrite(t *testing.T) {
 	mf, m, err = helpOpenOrCreateManifestFile(dir, deletionsThreshold)
 	require.NoError(t, err)
 	require.Equal(t, map[uint64]TableManifest{
-		uint64(deletionsThreshold * 3): {Level: 0, MaxCASCounter: casCounter},
+		uint64(deletionsThreshold * 3): {Level: 0, MaxCASCounter: casCounter,
+			Smallest: []byte(fmt.Sprintf("Smallest%d", deletionsThreshold*3)),
+			Biggest:  []byte(fmt.Sprintf("biggest%d", deletionsThreshold*3))},
 	}, m.Tables)
 }

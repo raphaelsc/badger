@@ -532,9 +532,9 @@ func TestIterate2Basic(t *testing.T) {
 				rewind = false
 				continue
 			}
-			require.EqualValues(t, bkey(count), string(key))
+			require.EqualValues(t, bkey(count), key)
 			val := getItemValue(t, item)
-			require.EqualValues(t, bval(count), string(val))
+			require.EqualValues(t, bval(count), val)
 			require.Equal(t, byte(count%127), item.UserMeta())
 			count++
 		}
