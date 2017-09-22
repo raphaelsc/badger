@@ -43,6 +43,7 @@ import (
 type Manifest struct {
 	Levels []LevelManifest
 	Tables map[uint64]TableManifest
+	Head   VlogOffset
 
 	// Contains total number of creation and deletion changes in the manifest -- used to compute
 	// whether it'd be useful to rewrite the manifest.
@@ -56,6 +57,13 @@ func createManifest() Manifest {
 		Levels: levels,
 		Tables: make(map[uint64]TableManifest),
 	}
+}
+
+// VlogOffset holds the offset into the value log after which value log entries are written that
+// haven't had a table written about them.
+type VlogOffset struct {
+	FileID uint32
+	Offset uint32
 }
 
 // LevelManifest contains information about LSM tree levels
@@ -394,7 +402,13 @@ func applyManifestChange(build *Manifest, tc *protos.ManifestChange) error {
 		delete(build.Tables, x.Delete.TableID)
 		build.Deletions++
 	case *protos.ManifestChange_Head:
-		// TODO: Implement.
+		if x.Head.FileID > 0xFFFFFFFF || x.Head.Offset > 0xFFFFFFFF {
+			return fmt.Errorf("MANIFEST file offset is out of range")
+		}
+		build.Head = VlogOffset{
+			FileID: uint32(x.Head.FileID),
+			Offset: uint32(x.Head.Offset),
+		}
 	}
 	return nil
 }
