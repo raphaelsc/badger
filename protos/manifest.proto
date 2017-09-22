@@ -24,12 +24,18 @@ message ManifestChangeSet {
         repeated ManifestChange changes = 1;
 }
 
+message CreateOperation {
+        uint64 tableID = 1;
+        uint32 level = 2;
+}
+
+message DeleteOperation {
+        uint64 tableID = 1;
+}
+
 message ManifestChange {
-        uint64 Id = 1;
-        enum Operation {
-                CREATE = 0;
-                DELETE = 1;
+        oneof operation {
+                CreateOperation create = 1;
+                DeleteOperation delete = 2;
         }
-        Operation Op = 2;
-        uint32 Level = 3;  // Only used for CREATE
 }

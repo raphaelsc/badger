@@ -211,7 +211,7 @@ func (mf *manifestFile) addChanges(changesParam []*protos.ManifestChange) error 
 var magicText = [4]byte{'B', 'd', 'g', 'r'}
 
 // The magic version number.
-const magicVersion = 2
+const magicVersion = 3
 
 func helpRewrite(dir string, m *Manifest) (*os.File, int, error) {
 	rewritePath := filepath.Join(dir, manifestRewriteFilename)
@@ -372,29 +372,27 @@ func ReplayManifestFile(fp *os.File) (ret Manifest, truncOffset int64, err error
 }
 
 func applyManifestChange(build *Manifest, tc *protos.ManifestChange) error {
-	switch tc.Op {
-	case protos.ManifestChange_CREATE:
-		if _, ok := build.Tables[tc.Id]; ok {
-			return fmt.Errorf("MANIFEST invalid, table %d exists", tc.Id)
+	switch x := tc.Operation.(type) {
+	case *protos.ManifestChange_Create:
+		if _, ok := build.Tables[x.Create.TableID]; ok {
+			return fmt.Errorf("MANIFEST invalid, table %d exists", x.Create.TableID)
 		}
-		build.Tables[tc.Id] = TableManifest{
-			Level: uint8(tc.Level),
+		build.Tables[x.Create.TableID] = TableManifest{
+			Level: uint8(x.Create.Level),
 		}
-		for len(build.Levels) <= int(tc.Level) {
+		for len(build.Levels) <= int(x.Create.Level) {
 			build.Levels = append(build.Levels, LevelManifest{make(map[uint64]struct{})})
 		}
-		build.Levels[tc.Level].Tables[tc.Id] = struct{}{}
+		build.Levels[x.Create.Level].Tables[x.Create.TableID] = struct{}{}
 		build.Creations++
-	case protos.ManifestChange_DELETE:
-		tm, ok := build.Tables[tc.Id]
+	case *protos.ManifestChange_Delete:
+		tm, ok := build.Tables[x.Delete.TableID]
 		if !ok {
-			return fmt.Errorf("MANIFEST removes non-existing table %d", tc.Id)
+			return fmt.Errorf("MANIFEST removes non-existing table %d", x.Delete.TableID)
 		}
-		delete(build.Levels[tm.Level].Tables, tc.Id)
-		delete(build.Tables, tc.Id)
+		delete(build.Levels[tm.Level].Tables, x.Delete.TableID)
+		delete(build.Tables, x.Delete.TableID)
 		build.Deletions++
-	default:
-		return fmt.Errorf("MANIFEST file has invalid manifestChange op")
 	}
 	return nil
 }
@@ -412,15 +410,21 @@ func applyChangeSet(build *Manifest, changeSet *protos.ManifestChangeSet) error 
 
 func makeTableCreateChange(id uint64, level int) *protos.ManifestChange {
 	return &protos.ManifestChange{
-		Id:    id,
-		Op:    protos.ManifestChange_CREATE,
-		Level: uint32(level),
+		Operation: &protos.ManifestChange_Create{
+			Create: &protos.CreateOperation{
+				TableID: id,
+				Level:   uint32(level),
+			},
+		},
 	}
 }
 
 func makeTableDeleteChange(id uint64) *protos.ManifestChange {
 	return &protos.ManifestChange{
-		Id: id,
-		Op: protos.ManifestChange_DELETE,
+		Operation: &protos.ManifestChange_Delete{
+			Delete: &protos.DeleteOperation{
+				TableID: id,
+			},
+		},
 	}
 }
