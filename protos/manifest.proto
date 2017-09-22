@@ -33,9 +33,15 @@ message DeleteOperation {
         uint64 tableID = 1;
 }
 
+message VlogOffset {
+        uint64 FileID = 1;
+        uint64 Offset = 2;
+}
+
 message ManifestChange {
         oneof operation {
                 CreateOperation create = 1;
                 DeleteOperation delete = 2;
+                VlogOffset head = 3;
         }
 }

@@ -393,6 +393,8 @@ func applyManifestChange(build *Manifest, tc *protos.ManifestChange) error {
 		delete(build.Levels[tm.Level].Tables, x.Delete.TableID)
 		delete(build.Tables, x.Delete.TableID)
 		build.Deletions++
+	case *protos.ManifestChange_Head:
+		// TODO: Implement.
 	}
 	return nil
 }
@@ -424,6 +426,17 @@ func makeTableDeleteChange(id uint64) *protos.ManifestChange {
 		Operation: &protos.ManifestChange_Delete{
 			Delete: &protos.DeleteOperation{
 				TableID: id,
+			},
+		},
+	}
+}
+
+func makeHeadChange(fileID uint64, offset uint64) *protos.ManifestChange {
+	return &protos.ManifestChange{
+		Operation: &protos.ManifestChange_Head{
+			Head: &protos.VlogOffset{
+				FileID: fileID,
+				Offset: offset,
 			},
 		},
 	}
